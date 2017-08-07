@@ -10,7 +10,7 @@ using System.Collections.Generic;
 
 namespace Sitecore.Support.Links
 {
-  public class LinkProvider: Sitecore.Links.LinkProvider
+  public class LinkProvider : Sitecore.Links.LinkProvider
   {
     protected new LinkBuilder CreateLinkBuilder(Sitecore.Links.UrlOptions options) =>
             new LinkBuilder(options);
@@ -29,8 +29,86 @@ namespace Sitecore.Support.Links
 
     public new class LinkBuilder : Sitecore.Links.LinkProvider.LinkBuilder
     {
-      public LinkBuilder(Sitecore.Links.UrlOptions options) : base(options)
+      private readonly UrlOptions _options;
+
+      public LinkBuilder(UrlOptions options) : base(options)
       {
+        this._options = options;
+      }
+
+      private static System.Collections.Generic.Dictionary<LinkProvider.LinkBuilder.SiteKey, SiteInfo> _siteResolvingTable;
+
+      private static System.Collections.Generic.List<SiteInfo> _sites;
+
+      private static readonly object _syncRoot = new object();
+      protected System.Collections.Generic.Dictionary<LinkProvider.LinkBuilder.SiteKey, SiteInfo> GetSiteResolvingTable()
+      {
+        System.Collections.Generic.List<SiteInfo> sites = SiteContextFactory.Sites;
+        if (!object.ReferenceEquals(LinkProvider.LinkBuilder._sites, sites))
+        {
+          lock (LinkProvider.LinkBuilder._syncRoot)
+          {
+            if (!object.ReferenceEquals(LinkProvider.LinkBuilder._sites, sites))
+            {
+              LinkProvider.LinkBuilder._sites = sites;
+              LinkProvider.LinkBuilder._siteResolvingTable = null;
+            }
+          }
+        }
+        if (LinkProvider.LinkBuilder._siteResolvingTable == null)
+        {
+          lock (LinkProvider.LinkBuilder._syncRoot)
+          {
+            if (LinkProvider.LinkBuilder._siteResolvingTable == null)
+            {
+              LinkProvider.LinkBuilder._siteResolvingTable = this.BuildSiteResolvingTable(LinkProvider.LinkBuilder._sites);
+              System.Collections.Generic.Dictionary<LinkProvider.LinkBuilder.SiteKey, SiteInfo> rebuiltTable = new Dictionary<SiteKey, SiteInfo>();
+              SiteKey sk;
+              foreach (var pair in _siteResolvingTable)
+              {
+                sk = pair.Key;
+                if (sk.Path.EndsWith("/"))
+                {
+                  string Path = sk.Path.Substring(0, sk.Path.Length - 1);
+                  SiteKey newSK = new SiteKey(Path, sk.Language);
+                  rebuiltTable.Add(newSK, pair.Value);
+                }
+                else
+                  rebuiltTable.Add(pair.Key, pair.Value);
+              }
+              LinkProvider.LinkBuilder._siteResolvingTable = rebuiltTable;
+            }
+          }
+        }
+        return LinkProvider.LinkBuilder._siteResolvingTable;
+      }
+
+
+      protected override SiteInfo ResolveTargetSite(Item item)
+      {
+        SiteContext site = Context.Site;
+        SiteContext siteContext = this._options.Site ?? site;
+        SiteInfo result = (siteContext != null) ? siteContext.SiteInfo : null;
+        if (!this._options.SiteResolving || item.Database.Name == "core")
+        {
+          return result;
+        }
+        if (this._options.Site != null && (site == null || this._options.Site.Name != site.Name))
+        {
+          return result;
+        }
+        if (siteContext != null && this.MatchCurrentSite(item, siteContext))
+        {
+          return result;
+        }
+        System.Collections.Generic.Dictionary<LinkProvider.LinkBuilder.SiteKey, SiteInfo> siteResolvingTable = this.GetSiteResolvingTable();
+        string path = item.Paths.FullPath.ToLowerInvariant();
+        SiteInfo siteInfo = Sitecore.Links.LinkProvider.LinkBuilder.FindMatchingSite(siteResolvingTable, Sitecore.Links.LinkProvider.LinkBuilder.BuildKey(path, item.Language.ToString())) ?? Sitecore.Links.LinkProvider.LinkBuilder.FindMatchingSiteByPath(siteResolvingTable, path);
+        if (siteInfo != null)
+        {
+          return siteInfo;
+        }
+        return result;
       }
 
       protected override string GetServerUrlElement(SiteInfo siteInfo)
